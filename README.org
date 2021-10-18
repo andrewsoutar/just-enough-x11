@@ -1,0 +1,8 @@
+* just-enough-x11 :: Common Lisp bindings for "just enough" of XCB
+  How much is "just enough"? Right now, able to generate wrappers for
+  all the X11 requests and events used in [[https://github.com/andrewsoutar/figment][figment]], which is the only
+  project using it at the moment. There's a decent chance that it will
+  work well with more than that, but no guarantees - it will try to
+  bind whatever you want, but you should definitely check the
+  parsing/macroexpansion to make sure that it's getting it right. Pull
+  requests welcome.
