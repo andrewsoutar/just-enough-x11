@@ -1,15 +1,12 @@
 (uiop:define-package #:com.andrewsoutar.just-enough-x11/codegen
   (:use #:cl #:alexandria #:cffi)
   (:use #:com.andrewsoutar.just-enough-x11/utils)
+  (:use #:com.andrewsoutar.just-enough-x11/xcb)
   (:import-from #:cxml)
   (:import-from #:cxml-dom)
   (:import-from #:trivial-features)
   (:export #:define-from-xml))
 (cl:in-package #:com.andrewsoutar.just-enough-x11/codegen)
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (define-foreign-library libxcb (t (:default "libxcb"))))
-(use-foreign-library libxcb)
 
 ;;; FIXME I have an awful lot of CT stuff, I should probably pull them
 ;;; out into a separate file
@@ -197,41 +194,3 @@
                               ,@initializers
                               (xcb-send ,connection ,opcode nil ,buffer ,length (null-pointer) 0)))))))))
               (t (error "Don't know how to compile ~A yet" message-elem)))))))
-
-;;; FIXME only checked this on Linux
-(defcstruct iovec
-  (base :pointer)
-  (len :size))
-
-(defcstruct xcb-protocol-request
-  (count :size)
-  (ext :pointer)
-  (opcode :uint8)
-  (isvoid :uint8))
-
-(defcfun (xcb-send-request-with-fds64 :library libxcb) :uint64
-  (connection :pointer)
-  (flags :int)
-  (vector (:pointer (:struct iovec)))
-  (req (:pointer (:struct xcb-protocol-request)))
-  (n-fds :uint)
-  (fds (:pointer :int)))
-
-(defun xcb-send (connection opcode has-reply buffer buffer-len fds fds-len &optional extension)
-  (declare (type foreign-pointer connection)
-           (type (unsigned-byte 8) opcode)
-           (type foreign-pointer buffer)
-           (type fixnum buffer-len)
-           (type (or null foreign-pointer) fds)
-           (type fixnum fds-len)
-           (type (or null foreign-pointer) extension))
-  ;; There's an undocumented requirement that vector[-1] and
-  ;; vector[-2] are allocated; we're putting everything in one array,
-  ;; so allocate three entries
-  (with-foreign-objects ((iovec '(:struct iovec) 3)
-                         (req '(:struct xcb-protocol-request)))
-    (setf (mem-aref iovec '(:struct iovec) 2) (list 'base buffer 'len buffer-len))
-    (setf (mem-ref req '(:struct xcb-protocol-request))
-          (list 'count 1 'ext (or extension (null-pointer)) 'opcode opcode 'isvoid (if has-reply 0 1)))
-    (xcb-send-request-with-fds64 connection 0 (mem-aptr iovec '(:struct iovec) 2) req
-                                 fds-len (or fds (null-pointer)))))
