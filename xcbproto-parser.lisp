@@ -15,6 +15,9 @@
 
 ;;; FIXME: All this is pretty identical to stuff in cl-wayland-client,
 ;;; maybe think about sharing some of it
+(defun trim-whitespace (string)
+  (string-trim #(#\Newline #\Tab #\Space) string))
+
 (defun text-contents (node)
   #.(format nil "Get the text contents of a string-node NODE, or ~
   NIL if NODE is null")
@@ -179,7 +182,7 @@
                          ((equal tag "typedef")
                           (get-attribute-or-lose child "newname"))
                          ((equal tag "import")
-                          (let ((import-name (string-trim #(#\Space #\Newline #\Tab) (text-contents child)))
+                          (let ((import-name (trim-whitespace (text-contents child)))
                                 (*default-pathname-defaults* proto-file))
                             (push (import-proto (make-pathname :name import-name :type "xml")) (imports header)))
                           (go next)))))
