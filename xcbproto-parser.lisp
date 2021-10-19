@@ -8,7 +8,7 @@
   (:import-from #:cxml-dom)
   (:export #:*default-proto-file* #:import-proto)
   (:export #:proto-header #:name #:c-name #:extension-name)
-  (:export #:*proto-header* #:find-message #:find-type))
+  (:export #:*proto-header* #:find-message #:find-type #:find-enum))
 (cl:in-package #:com.andrewsoutar.just-enough-x11/xcbproto-parser)
 
 ;;; Helpers
@@ -136,6 +136,25 @@
           ((equal tag "typedef")
            (find-type (get-attribute-or-lose elem "oldname")))
           (t (error 'unknown-tag-error :element elem)))))
+
+(defun find-enum (enum-name)
+  "Finds an alist ((entry-str . value-int) ...) of the enum's values"
+  (let ((enum-elem (or (gethash enum-name (enums *proto-header*))
+                       (error "No enum named \"~A\"" enum-name))))
+    (mapcan (lambda (item &aux (tag (dom:tag-name item)))
+              (cond ((equal tag "item")
+                     (list (cons (get-attribute-or-lose item "name")
+                                 (destructuring-bind (val-elem) (child-elems item)
+                                   (let ((tag (dom:tag-name val-elem))
+                                         (value (parse-integer (text-contents val-elem))))
+                                     (cond ((equal tag "value") value)
+                                           ((equal tag "bit") (ash 1 value))
+                                           (t (error 'unknown-tag-error :element val-elem))))))))
+                    ((equal tag "doc")
+                     ;; FIXME?
+                     ())
+                    (t (error 'unknown-tag-error :element item))))
+            (child-elems enum-elem))))
 
 
 (defvar *import-cache* (make-hash-table :test 'equal)
