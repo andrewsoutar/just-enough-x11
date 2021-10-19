@@ -85,6 +85,16 @@
   Used by many functions in this package, which may need to access ~
   header-specific context, eg. types."))
 
+(defun parse-expression (elem)
+  (let ((tag (dom:tag-name elem)))
+    (cond ((equal tag "fieldref")
+           `(:field-ref ,(trim-whitespace (text-contents elem))))
+          ((equal tag "enumref")
+           (let* ((enum-name (get-attribute-or-lose elem "ref"))
+                  (enum-entries (find-enum enum-name)))
+             (cdr (assoc (trim-whitespace (text-contents elem)) enum-entries :test #'equal))))
+          (t (error 'unknown-tag-error :element elem)))))
+
 (defun parse-structlike (elem &optional extra-handler)
   "Parse a structure-like element into a list of its fields."
   (mapcan (lambda (child)
