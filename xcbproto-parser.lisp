@@ -209,9 +209,9 @@
          (root (dom:document-element dom))
 
          ;; I know this looks strange but the names in the XML don't line up with our usage
-         (header (make-instance 'xcb-header :name (get-attribute-or-lose root "header")
-                                            :c-name (get-attribute root "extension-name")
-                                            :extension-name (get-attribute root "extension-xname"))))
+         (header (make-instance 'proto-header :name (get-attribute-or-lose root "header")
+                                              :c-name (get-attribute root "extension-name")
+                                              :extension-name (get-attribute root "extension-xname"))))
 
     (assert (equal (dom:tag-name root) "xcb"))
     (setf (gethash proto-file *import-cache*) header)
