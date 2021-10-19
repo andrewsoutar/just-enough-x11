@@ -13,9 +13,6 @@
 
 ;;; FIXME I have an awful lot of CT stuff, I should probably pull them
 ;;; out into a separate file
-(defmacro ct (&body body)
-  "Shorthand for (EVAL-WHEN (:COMPILE-TOPLEVEL :LOAD-TOPLEVEL :EXECUTE) ...)"
-  `(eval-when (:compile-toplevel :load-toplevel :execute) ,@body))
 
 ;;; FIXME this has a lot of similarities to the parser in
 ;;; cl-wayland-client, maybe want to dedup
