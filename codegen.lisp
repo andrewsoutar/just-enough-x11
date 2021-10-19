@@ -1,7 +1,8 @@
 (uiop:define-package #:com.andrewsoutar.just-enough-x11/codegen
-  (:use #:cl #:alexandria #:cffi)
+  (:use #:cl #:alexandria #:cffi #:com.andrewsoutar.matcher)
   (:use #:com.andrewsoutar.just-enough-x11/utils)
   (:use #:com.andrewsoutar.just-enough-x11/xcb)
+  (:use #:com.andrewsoutar.just-enough-x11/xcbproto-parser)
   (:import-from #:cxml)
   (:import-from #:cxml-dom)
   (:import-from #:trivial-features)
@@ -11,89 +12,11 @@
 ;;; FIXME I have an awful lot of CT stuff, I should probably pull them
 ;;; out into a separate file
 
-;;; FIXME this has a lot of similarities to the parser in
-;;; cl-wayland-client, maybe want to dedup
-(ct
-  (defun text-contents (node)
-    (when node
-      (apply 'concatenate 'string
-             (map 'list (lambda (node)
-                          (cond ((dom:comment-p node) "")
-                                ((dom:text-node-p node) (dom:data node))
-                                (t (cerror "Skip" "Non-text found: ~A" node) "")))
-                  (dom:child-nodes node))))))
-
-(ct
-  (defun child-elems (node)
-    (coerce (remove-if-not #'dom:element-p (dom:child-nodes node)) 'list)))
-
-(ct
-  (defun get-attribute (element name)
-    (when-let ((attr (dom:get-attribute-node element name)))
-      (dom:value attr))))
-(ct
-  (defun get-attribute-or-lose (element name)
-    (or (get-attribute element name)
-        (error "Element ~A missing required attribute \"~A\"" element name))))
-
-(ct (defvar *xcb-import-cache* (make-hash-table :test 'equal)))
-(ct (defparameter *default-proto-file* #p"/usr/share/xcb/xproto.xml"))
 (ct (defvar *xcb-header*))
-(ct
-  (defclass xcb-header ()
-    ((name :type string :reader name :initarg :name)
-     (c-name :type string :reader c-name :initarg :c-name)
-     (extension-name :type (or null string) :reader extension-name :initarg :extension-name)
-     (imports :type list :accessor imports :initform ())
-     (types :type hash-table :reader types :initform (make-hash-table :test 'equal))
-     (enums :type hash-table :reader enums :initform (make-hash-table :test 'equal))
-     (messages :type hash-table :reader messages :initform (make-hash-table :test 'equal)))))
-(ct
-  (defmethod initialize-instance :after ((self xcb-header) &key &allow-other-keys)
-    (let ((c-name (c-name self))
-          (extension-name (extension-name self)))
-      (unless (eql (null c-name) (null extension-name))
-        (error "~A has ~1{~A ~A but no ~A~}" self
-               (if c-name (list 'c-name c-name 'extension-name) (list 'extension-name extension-name 'c-name)))))))
-(ct
-  (defun xcb-import (proto-file)
-    (setf proto-file (pathname proto-file))
-    (multiple-value-bind (header foundp) (gethash proto-file *xcb-import-cache*)
-      (when foundp
-        (return-from xcb-import header)))
-    (let* ((root (dom:document-element (cxml:parse-file proto-file (cxml-dom:make-dom-builder))))
-           ;; I know this looks strange but the names in the XML don't line up with our usage
-           (header (make-instance 'xcb-header :name (get-attribute-or-lose root "header")
-                                              :c-name (get-attribute root "extension-name")
-                                              :extension-name (get-attribute root "extension-xname"))))
-      (assert (equal (dom:tag-name root) "xcb"))
-      (setf (gethash proto-file *xcb-import-cache*) header)
-      (unless (equal proto-file *default-proto-file*)
-        (push (xcb-import *default-proto-file*) (imports header)))
-      (dolist (child (child-elems root) header)
-        (let* ((tag (dom:tag-name child))
-               (name (cond ((member tag '("request" "event" "eventcopy" "error" "errorcopy" "struct"
-                                          "union" "eventstruct" "xidtype" "xidunion" "enum") :test #'equal)
-                            (get-attribute-or-lose child "name"))
-                           ((equal tag "typedef")
-                            (get-attribute-or-lose child "newname"))
-                           ((equal tag "import")
-                            (push (xcb-import (make-pathname
-                                               :name (string-trim #(#\Space #\Newline #\Tab) (text-contents child))
-                                               :type "xml"
-                                               :defaults proto-file))
-                                  (imports header))
-                            (go next)))))
-          (let ((table (cond ((member tag '("request" "event" "eventcopy") :test #'equal) (messages header))
-                             ((equal tag "enum") (enums header))
-                             (t (types header)))))
-            (assert (null (shiftf (gethash name table) child)))))
-        next))))
 
 (ct
-  (defun make-struct-outputter (elem buffer-ptr &key request-hack ignored-extras (offset 0) (alignment (cons 0 1)))
+  (defun make-struct-outputter (fields buffer-ptr &key request-hack (offset 0) (alignment (cons 0 1)))
     "Returns values: lambda-list, length-form, declarations, initializers, alignment"
-    (assert (null (imports *xcb-header*))) ; No code to deal with these yet
     (let ((lambda-list (make-collector))
           (declarations (make-collector))
           (initializers (make-collector)))
@@ -101,39 +24,34 @@
         ;; In requests, the first byte is at offset 1
         (incf offset)
         (incf (car alignment)))
-      (dolist (field (child-elems elem)
+      (dolist (field fields
                      (values (collect lambda-list) offset (collect declarations) (collect initializers) alignment))
-        (let ((tag (dom:tag-name field))
-              width)
-          (labels ((make-setter (val)
-                     (let* ((worst-case (logior (car alignment) (cdr alignment) width #-32-bit 8 #-64-bit 4))
-                            (stride (1+ (logandc1 worst-case (1- worst-case))))
-                            (type (find-symbol (format nil "UINT~A" (* 8 stride)) :keyword)))
-                       (assert type)
-                       (if (= stride width)
-                           `(setf (mem-ref ,buffer-ptr ,type ,offset) ,val)
-                           (let ((val-var (gensym "VAL")))
-                             `(let ((,val-var ,val))
-                                ,@(loop for i from 0 below width by stride
-                                        collect `(setf (mem-ref ,buffer-ptr ,type ,(+ offset i))
-                                                       (ldb (byte ,stride ,i) ,val-var)))))))))
-            (cond ((equal tag "pad")
-                   (setf width (parse-integer (get-attribute-or-lose field "bytes"))))
-                  ((equal tag "field")
-                   (let* ((name (get-attribute-or-lose field "name"))
-                          (var (make-symbol (substitute #\- #\_ (string-upcase name))))
-                          (type (get-attribute-or-lose field "type"))
-                          (type-elem (or (gethash type (types *xcb-header*))
-                                         (error "~A: undefined type ~A" field type)))
-                          (type-elem-tag (dom:tag-name type-elem)))
-                     (collect lambda-list var)
-                     (cond ((equal type-elem-tag "xidtype")
-                            (setf width 4)
-                            (collect declarations `(type (unsigned-byte 29) ,var))
-                            (collect initializers (make-setter var)))
-                           (t (error "Type ~A not handled" type-elem)))))
-                  ((member tag ignored-extras :test #'equal))
-                  (t (error "Field ~A not handled" field))))
+        (let (width)
+          (flet ((make-setter (val)
+                   (let* ((worst-case (logior (car alignment) (cdr alignment) width #-32-bit 8 #-64-bit 4))
+                          (stride (1+ (logandc1 worst-case (1- worst-case))))
+                          (type (find-symbol (format nil "UINT~A" (* 8 stride)) :keyword)))
+                     (assert type)
+                     (if (= stride width)
+                         `(setf (mem-ref ,buffer-ptr ,type ,offset) ,val)
+                         (let ((val-var (gensym "VAL")))
+                           `(let ((,val-var ,val))
+                              ,@(loop for i from 0 below width by stride
+                                      collect `(setf (mem-ref ,buffer-ptr ,type ,(+ offset i))
+                                                     (ldb (byte ,stride ,i) ,val-var)))))))))
+            (match-ecase field
+              ((:pad bytes &rest)
+               (setf width bytes))
+              ((:field &key name type &rest)
+               (let ((var (make-symbol (substitute #\- #\_ (string-upcase name)))))
+                 (collect lambda-list var)
+                 (match-ecase (find-type type)
+                   (nil (error "~A: undefined type ~A" name type))
+                   (:xid (setf width 4)
+                         (collect declarations `(type (unsigned-byte 29) ,var))
+                         (collect initializers (make-setter var)))
+                   (t (error "Unable to parse type: ~A" type)))))
+              (t (error "Unable to parse field: ~A" field))))
           (when width
             (when request-hack
               ;; This field fits in the 1-byte gap in the request
@@ -165,32 +83,30 @@
         ,@body))))
 
 (defmacro define-from-xml (proto-file &body names)
-  (let* ((*xcb-header* (xcb-import (merge-pathnames proto-file *default-proto-file*)))
+  (let* ((*proto-header* (import-proto proto-file))
          (forms (make-collector)))
     (dolist (name names `(progn ,@(collect forms)))
-      (let* ((xmsg-name (delete #\- (string-capitalize name)))
-             (message-elem (gethash xmsg-name (messages *xcb-header*))))
-        (unless (some (lambda (sup)
-                        (and (equal (car sup) (name *xcb-header*))
-                             (member xmsg-name (cdr sup) :test #'equal)))
+      (let* ((xmsg-name (delete #\- (string-capitalize name))))
+        (unless (some (lambda (supported)
+                        (destructuring-bind (header &rest messages) supported
+                          (and (equal header (name *proto-header*))
+                               (member xmsg-name messages :test #'equal))))
                       *supported-messages*)
           (warn "Message ~A.~A is not known to be supported, proceed at your own risk!"
-                (name *xcb-header*) xmsg-name))
-        (cond ((null message-elem) (cerror "Skip" "Couldn't find message ~A" name))
-              ((equal (dom:tag-name message-elem) "request")
-               (assert (null (c-name *xcb-header*)))
-               (collect forms
-                 (with-gensyms (length buffer)
-                   (let ((connection (copy-symbol 'connection))
-                         (opcode (parse-integer (get-attribute-or-lose message-elem "opcode"))))
-                     (multiple-value-bind (lambda-list length-form decls initializers)
-                         (make-struct-outputter message-elem buffer :request-hack t
-                                                                    :ignored-extras '("doc") :alignment (cons 0 0))
-                       `(defun ,name (,connection ,@lambda-list)
-                          (declare (type foreign-pointer ,connection)
-                                   ,@decls)
-                          (let ((,length ,length-form))
-                            (with-pointer-to-bytes (,buffer ,length)
-                              ,@initializers
-                              (xcb-send ,connection ,opcode nil ,buffer ,length (null-pointer) 0)))))))))
-              (t (error "Don't know how to compile ~A yet" message-elem)))))))
+                (name *proto-header*) xmsg-name))
+        (match-ecase (find-message xmsg-name)
+          (nil (cerror "Skip" "Couldn't find message ~A" name))
+          ((:request &key opcode fields &rest)
+           (collect forms
+             (let ((connection (copy-symbol 'connection))
+                   (length (gensym "LENGTH"))
+                   (buffer (gensym "BUFFER")))
+               (multiple-value-bind (lambda-list length-form decls initializers)
+                   (make-struct-outputter fields buffer :request-hack t :alignment (cons 0 0))
+                 `(defun ,name (,connection ,@lambda-list)
+                    (declare (type foreign-pointer ,connection)
+                             ,@decls)
+                    (let ((,length ,length-form))
+                      (with-pointer-to-bytes (,buffer ,length)
+                        ,@initializers
+                        (xcb-send ,connection ,opcode nil ,buffer ,length (null-pointer) 0)))))))))))))
