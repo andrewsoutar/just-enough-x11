@@ -3,6 +3,7 @@
   files into more easily digestible lispy structures that are easier ~
   to use for codegen."))
   (:use #:cl #:alexandria)
+  (:shadow #:parse-error)
   (:import-from #:cxml)
   (:import-from #:cxml-dom)
   (:export #:*default-proto-file* #:import-proto)
@@ -34,10 +35,22 @@
   (when-let ((attr (dom:get-attribute-node element name)))
     (dom:value attr)))
 
+(define-condition parse-error (error) ())
+(define-condition unknown-tag-error (parse-error)
+  ((element :reader element :initarg :element))
+  (:report (lambda (err stream)
+             (format stream "Unknown element ~A" (element err)))))
+(define-condition missing-attr-error (parse-error)
+  ((element :reader element :initarg :element)
+   (attribute :reader attribute :initarg :attribute))
+  (:report (lambda (err stream)
+             (format stream "Element ~A missing required attribute \"~A\""
+                     (element err) (attribute err)))))
+
 (defun get-attribute-or-lose (element name)
   "Gets the value of the attribute NAME of ELEMENT, or loses"
   (or (get-attribute element name)
-      (error "Element ~A missing required attribute \"~A\"" element name)))
+      (error 'missing-attr-error :element element :attribute name)))
 
 
 ;;; Parser data structures
@@ -86,17 +99,17 @@
 (defun find-message (message-name)
   (when-let ((elem (gethash message-name (messages *proto-header*))))
     (let ((tag (dom:tag-name elem)))
-      (cond ((string= tag "request")
+      (cond ((equal tag "request")
              `(:request
                :opcode ,(parse-integer (get-attribute-or-lose elem "opcode"))
                :fields ,(parse-structlike elem (lambda (child)
                                                  (let ((tag (dom:tag-name child)))
-                                                   (cond ((string= tag "doc")
+                                                   (cond ((equal tag "doc")
                                                           ;; FIXME
                                                           t)))))))
             ((member tag '("event" "eventcopy") :test #'equal)
              (error "Don't know how to parse ~A yet" elem))
-            (t (error "Unknown message: ~A" elem))))))
+            (t (error 'unknown-tag-error :element elem))))))
 
 (defun find-type (type-name)
   ;; These are the ones hard-coded in xcbproto:xcbgen/xtypes.py
@@ -114,8 +127,8 @@
                   (multiple-value-bind (elem foundp) (gethash type-name (types header))
                     (when foundp (list header elem))))
                 (list* *proto-header* (imports *proto-header*)))
-          (return-from find-type nil))
-    (cond ((string= tag "xidtype")
+          (error "No type named \"~A\"" type-name))
+    (cond ((equal tag "xidtype")
            :xid)
           (t (error "Unable to parse type: ~A" elem)))))
 
