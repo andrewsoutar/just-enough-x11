@@ -37,6 +37,10 @@
   (defun get-attribute (element name)
     (when-let ((attr (dom:get-attribute-node element name)))
       (dom:value attr))))
+(ct
+  (defun get-attribute-or-lose (element name)
+    (or (get-attribute element name)
+        (error "Element ~A missing required attribute \"~A\"" element name))))
 
 (ct (defvar *xcb-import-cache* (make-hash-table :test 'equal)))
 (ct (defparameter *default-proto-file* #p"/usr/share/xcb/xproto.xml"))
@@ -65,8 +69,7 @@
         (return-from xcb-import header)))
     (let* ((root (dom:document-element (cxml:parse-file proto-file (cxml-dom:make-dom-builder))))
            ;; I know this looks strange but the names in the XML don't line up with our usage
-           (header (make-instance 'xcb-header :name (or (get-attribute root "header")
-                                                        (error "No header attribute on root"))
+           (header (make-instance 'xcb-header :name (get-attribute-or-lose root "header")
                                               :c-name (get-attribute root "extension-name")
                                               :extension-name (get-attribute root "extension-xname"))))
       (assert (equal (dom:tag-name root) "xcb"))
@@ -77,9 +80,9 @@
         (let* ((tag (dom:tag-name child))
                (name (cond ((member tag '("request" "event" "eventcopy" "error" "errorcopy" "struct"
                                           "union" "eventstruct" "xidtype" "xidunion" "enum") :test #'equal)
-                            (get-attribute child "name"))
+                            (get-attribute-or-lose child "name"))
                            ((equal tag "typedef")
-                            (get-attribute child "newname"))
+                            (get-attribute-or-lose child "newname"))
                            ((equal tag "import")
                             (push (xcb-import (make-pathname
                                                :name (string-trim #(#\Space #\Newline #\Tab) (text-contents child))
@@ -87,7 +90,6 @@
                                                :defaults proto-file))
                                   (imports header))
                             (go next)))))
-          (assert name)
           (let ((table (cond ((member tag '("request" "event" "eventcopy") :test #'equal) (messages header))
                              ((equal tag "enum") (enums header))
                              (t (types header)))))
@@ -122,12 +124,11 @@
                                         collect `(setf (mem-ref ,buffer-ptr ,type ,(+ offset i))
                                                        (ldb (byte ,stride ,i) ,val-var)))))))))
             (cond ((equal tag "pad")
-                   (setf width (parse-integer (get-attribute field "bytes"))))
+                   (setf width (parse-integer (get-attribute-or-lose field "bytes"))))
                   ((equal tag "field")
-                   ;; FIXME I really should have a get-attribute-or-lose function for stuff like this
-                   (let* ((name (or (get-attribute field "name") (error "field ~A has no name" field)))
+                   (let* ((name (get-attribute-or-lose field "name"))
                           (var (make-symbol (substitute #\- #\_ (string-upcase name))))
-                          (type (or (get-attribute field "type") (error "field ~A has no type" field)))
+                          (type (get-attribute-or-lose field "type"))
                           (type-elem (or (gethash type (types *xcb-header*))
                                          (error "~A: undefined type ~A" field type)))
                           (type-elem-tag (dom:tag-name type-elem)))
@@ -187,8 +188,7 @@
                (collect forms
                  (with-gensyms (length buffer)
                    (let ((connection (copy-symbol 'connection))
-                         (opcode (parse-integer
-                                  (or (get-attribute message-elem "opcode") (error "~A: no opcode" message-elem)))))
+                         (opcode (parse-integer (get-attribute-or-lose message-elem "opcode"))))
                      (multiple-value-bind (lambda-list length-form decls initializers)
                          (make-struct-outputter message-elem buffer :request-hack t
                                                                     :ignored-extras '("doc") :alignment (cons 0 0))
