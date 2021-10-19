@@ -1,5 +1,6 @@
 (uiop:define-package #:com.andrewsoutar.just-enough-x11/codegen
   (:use #:cl #:alexandria #:cffi #:com.andrewsoutar.matcher)
+  (:local-nicknames (#:m #:com.andrewsoutar.matcher/matchers))
   (:use #:com.andrewsoutar.just-enough-x11/utils)
   (:use #:com.andrewsoutar.just-enough-x11/xcb)
   (:use #:com.andrewsoutar.just-enough-x11/xcbproto-parser)
@@ -33,7 +34,7 @@
                           (type (find-symbol (format nil "UINT~A" (* 8 stride)) :keyword)))
                      (assert type)
                      (if (= stride width)
-                         `(setf (mem-ref ,buffer-ptr ,type ,offset) ,val)
+                         `(setf (mem-ref ,buffer-ptr ,type ,offset) (ldb (byte ,stride 0) ,val))
                          (let ((val-var (gensym "VAL")))
                            `(let ((,val-var ,val))
                               ,@(loop for i from 0 below width by stride
@@ -50,6 +51,12 @@
                    (:xid (setf width 4)
                          (collect declarations `(type (unsigned-byte 29) ,var))
                          (collect initializers (make-setter var)))
+                   (((m:and kind (m:or :unsigned :signed)) bits)
+                    (multiple-value-bind (bytes leftover) (floor bits 8)
+                      (assert (zerop leftover))
+                      (setf width bytes))
+                    (collect declarations `(type (,(if (eql kind :signed) 'signed-byte 'unsigned-byte) ,bits) ,var))
+                    (collect initializers (make-setter var)))
                    (t (error "Unable to parse type: ~A" type)))))
               (t (error "Unable to parse field: ~A" field))))
           (when width
