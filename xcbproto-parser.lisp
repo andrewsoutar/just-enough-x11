@@ -133,7 +133,9 @@
           (error "No type named \"~A\"" type-name))
     (cond ((equal tag "xidtype")
            :xid)
-          (t (error "Unable to parse type: ~A" elem)))))
+          ((equal tag "typedef")
+           (find-type (get-attribute-or-lose elem "oldname")))
+          (t (error 'unknown-tag-error :element elem)))))
 
 
 (defvar *import-cache* (make-hash-table :test 'equal)
