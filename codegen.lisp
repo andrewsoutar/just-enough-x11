@@ -10,9 +10,6 @@
   (:export #:define-from-xml))
 (cl:in-package #:com.andrewsoutar.just-enough-x11/codegen)
 
-;;; FIXME I have an awful lot of CT stuff, I should probably pull them
-;;; out into a separate file
-
 (ct
   (defun make-struct-outputter (fields buffer-ptr &key request-hack (offset 0) (alignment (cons 0 1)))
     "Returns values: lambda-list, length-form, declarations, initializers, alignment"
