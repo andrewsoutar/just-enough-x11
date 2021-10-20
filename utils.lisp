@@ -9,7 +9,7 @@
   `(eval-when (:compile-toplevel :load-toplevel :execute) ,@body))
 
 (defmacro nest (&body body)
-  (destructuring-bind (first rest) body
+  (destructuring-bind (first &rest rest) body
     (if rest `(,@(first body) (nest ,@(rest body))) first)))
 
 ;;; FIXME I might want to spin some of these utils out into a library,
