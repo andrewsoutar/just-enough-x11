@@ -21,7 +21,7 @@
 
 (defun collect-all (collector &rest collectors)
   (dolist (2collector collectors)
-    (when (setf (cdar collector) (cdr collector))
+    (when (setf (cdar collector) (cdr 2collector))
       (setf (car collector) (car 2collector))))
   collector)
 
