@@ -42,7 +42,9 @@
                            `(let ((,val-var ,val))
                               ,@(loop for i from 0 below width by stride
                                       collect `(setf (mem-ref ,buffer-ptr ,type ,(+ offset i))
-                                                     (ldb (byte ,stride ,i) ,val-var)))))))))
+                                                     (ldb (byte ,stride #+big-endian ,(- width stride i)
+                                                                        #+little-endian i)
+                                                          ,val-var)))))))))
             (match-ecase field
               ((:pad bytes &rest)
                (setf width bytes))
