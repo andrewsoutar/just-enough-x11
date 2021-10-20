@@ -1,7 +1,7 @@
 (uiop:define-package #:com.andrewsoutar.just-enough-x11/utils
   (:use #:cl)
   (:export #:ct)
-  (:export #:make-collector #:collect))
+  (:export #:make-collector #:collect-all #:collect))
 (cl:in-package #:com.andrewsoutar.just-enough-x11/utils)
 
 (defmacro ct (&body body)
