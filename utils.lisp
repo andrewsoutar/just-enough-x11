@@ -10,12 +10,16 @@
 
 ;;; FIXME I might want to spin some of these utils out into a library,
 ;;; I end up copy-pasting them into all my projects
-(defun make-collector ()
-  (let ((ret (cons nil nil)))
-    (setf (car ret) ret)
+(defun make-collector (&rest things)
+  (let ((ret (cons nil things)))
+    (setf (car ret) (last ret))
     ret))
 
+(defun collect-all (collector &rest collectors)
+  (dolist (2collector collectors)
+    (setf (cdar collector) (cdr 2collector)
+          (car collector) (car 2collector)))
+  collector)
+
 (defun collect (collector &rest things)
-  (when things
-    (setf (car collector) (last (setf (cdar collector) things))))
-  (cdr collector))
+  (cdr (collect-all collector (apply #'make-collector things))))
