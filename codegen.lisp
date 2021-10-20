@@ -18,15 +18,32 @@
           (temp #2=(string-downcase (subseq name start end)) (concatenate 'string temp "-" #2#)))
          ((null end) temp))))
 
+;;; Alignments are cons cells: the car is the offset, the cdr is the
+;;; multiple. An alignment of (a . n) represents any integer of the
+;;; form (a + k*n) for all k. In particular, (a . 0) represents an
+;;; alignment of exactly a; (x . 1) represents unknown alignment.
+(ct (defun alignment-union (&rest alignments)
+      "An alignment which can represent any of the ALIGNMENTS"
+      ;; We choose our multiple such that it divides each of the
+      ;; multiples in ALIGNMENS, and so that all the offsets of the
+      ;; ALIGNMENTs are pairwise equivalent modulo the multiple. After
+      ;; that, which ALIGNMENT we choose to provide the eventual
+      ;; offset is arbitrary.
+      (assert (not (endp alignments)))
+      (cons (car (first alignments))
+            (multiple-value-call #'gcd
+              (values-list (mapcar #'cdr alignments))
+              (values-list (mapcar (lambda (a) (- (cdr a) (car (first alignments)))) (rest alignments)))))))
+
 (ct (defun gen-setter (buffer-ptr-var width alignment &key signedp name-hint)
       #.(format nil "Generates code for setting a (potentially ~
       unaligned) WIDTH-byte int in the buffer. Returns values like ~
       MAKE-STRUCT-OUTPUTTER.")
       (do* ((value-var (if name-hint (make-symbol name-hint) (gensym "VALUE")))
-            (type `(type (,(if signedp 'signed-byte 'unsigned-byte) ,(* 8 width)) ,value-var))
+            (type-decl `(type (,(if signedp 'signed-byte 'unsigned-byte) ,(* 8 width)) ,value-var))
             (initializers (make-collector))
             (offset 0))
-           ((>= offset width) (values value-var type () width initializers alignment))
+           ((>= offset width) (values value-var (list type-decl) () width initializers alignment))
         (let* ((worst-case (logior (car alignment) (cdr alignment) 8 #-64-bit 4))
                (stride (- (logior (ash -1 (1- (integer-length (- width offset)))) worst-case (- worst-case))))
                (type (find-symbol (format nil "UINT~A" (* 8 stride)) :keyword)))
@@ -46,12 +63,32 @@
           (types (make-collector))
           (wrapper-forms (make-collector))
           (length-forms (make-collector))
-          (initializers (make-collector)))
+          (initializers (make-collector))
+          (value-list-fields ()))
+      ;; value_mask + value_list at the end gets converted to keyword arguments
+      (block parse-value-list
+        (match-case (last fields 2)
+          (((:field &key ((:name "value_mask")) ((:type "CARD32")) ((:enum (mask :mask))) &rest)
+            (:switch-struct &key ((:name "value_list")) ((:expr (:field-ref "value_mask"))) cases &rest))
+           (let ((mask-alist (find-enum mask)))
+             (setf value-list-fields
+                   (mapcar (lambda (case)
+                             (or (match-case case
+                                   ((:bitcase &key fields ((:matches (match-num)))
+                                              ((:enum ((m:equal mask) :mask))) &rest)
+                                    (when-let ((keyword-name (car (rassoc match-num mask-alist))))
+                                      (list (intern (nstring-upcase (pascal-to-kebab keyword-name)) :keyword)
+                                            match-num fields))))
+                                 (return-from parse-value-list)))
+                           cases)
+                   fields (butlast fields 2))))))
+
       (when request-hack
         ;; In requests, the first byte is at offset 1
         (collect initializers `(incf-pointer ,buffer-ptr-var 1))
         (collect length-forms 1)
         (incf (car alignment)))
+
       (dolist (field fields)
         (match-ecase field
           ((:pad bytes &rest)
@@ -75,7 +112,7 @@
                  (())
                  ((m:and var (m:type symbol))
                   (collect lambda-list var)
-                  (collect types (if override-type `(type ,override-type ,var) inner-types)))
+                  (apply #'collect types (if override-type `((type ,override-type ,var)) inner-types)))
                  ((&rest inner-ll)
                   (let ((var (make-symbol name-hint)))
                     (collect lambda-list var)
@@ -95,6 +132,48 @@
           (collect initializers `(incf-pointer ,buffer-ptr-var 2))
           (incf (car alignment) 2)
           (setf request-hack nil)))
+
+      (when value-list-fields
+        (collect lambda-list '&key)
+        (let ((value-mask-ptr-var (gensym "VALUE-MASK-PTR"))
+              (switch-initializers (make-collector)))
+          (multiple-value-bind (value-mask-var mask-type-decl mask-initializers)
+              (multiple-value-bind (inner-ll inner-types inner-wrapper-forms inner-length-form
+                                    inner-initializers inner-alignment)
+                  (gen-setter value-mask-ptr-var 4 alignment :name-hint "VALUE-MASK-PTR")
+                (assert (symbolp inner-ll))
+                (assert (endp (collect inner-wrapper-forms)))
+                (collect length-forms inner-length-form)
+                (setf alignment inner-alignment)
+                (values inner-ll inner-types inner-initializers))
+            (dolist (switch-field value-list-fields)
+              (destructuring-bind (keyword mask-num fields) switch-field
+                (multiple-value-bind (inner-ll inner-types inner-wrapper-forms inner-length-form
+                                      inner-initializers inner-alignment)
+                    (make-struct-outputter fields buffer-ptr-var :alignment alignment)
+                  (assert (endp (collect inner-wrapper-forms)))
+                  (let ((present-p-var (gensym (format nil "~A-PRESENT-P" keyword))))
+                    (match-ecase inner-ll
+                      (())
+                      ((lone-var)
+                       (collect lambda-list `((,keyword ,lone-var) nil ,present-p-var))
+                       (apply #'collect types
+                              (mapcar (lambda (inner-type)
+                                        (match-ecase inner-type
+                                          (('type type var) `(type (or null ,type) ,var))))
+                                      inner-types))))
+                    (collect length-forms `(if ,present-p-var ,inner-length-form 0))
+                    (collect switch-initializers `(when ,present-p-var
+                                                    (setf ,value-mask-var (logior ,value-mask-var ,mask-num))
+                                                    ,@(collect inner-initializers)))
+                    (setf alignment (alignment-union alignment inner-alignment))))))
+            (collect initializers
+              `(let ((,value-mask-var 0)
+                     (,value-mask-ptr-var ,buffer-ptr-var))
+                 (declare ,@mask-type-decl)
+                 (incf-pointer ,buffer-ptr-var 4)
+                 ,@(collect switch-initializers)
+                 ,@(collect mask-initializers))))))
 
       (values (collect lambda-list) (collect types) wrapper-forms
               `(+ ,@(collect length-forms)) initializers alignment))))
