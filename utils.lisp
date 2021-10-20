@@ -8,6 +8,10 @@
   "Shorthand for (EVAL-WHEN (:COMPILE-TOPLEVEL :LOAD-TOPLEVEL :EXECUTE) ...)"
   `(eval-when (:compile-toplevel :load-toplevel :execute) ,@body))
 
+(defmacro nest (&body body)
+  (destructuring-bind (first rest) body
+    (if rest `(,@(first body) (nest ,@(rest body))) first)))
+
 ;;; FIXME I might want to spin some of these utils out into a library,
 ;;; I end up copy-pasting them into all my projects
 (defun make-collector (&rest things)
