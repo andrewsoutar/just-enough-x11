@@ -11,6 +11,14 @@
 (cl:in-package #:com.andrewsoutar.just-enough-x11/codegen)
 
 (ct
+  (defun pascal-to-kebab (name)
+    "Convert a PascalCaseName to a kebab-case-name"
+    (do* ((start 0 end)
+          (end #1=(position-if #'upper-case-p name :start (1+ start)) #1#)
+          (temp #2=(string-downcase (subseq name start end)) (concatenate 'string temp "-" #2#)))
+         ((null end) temp))))
+
+(ct
   (defun make-struct-outputter (fields buffer-ptr &key request-hack (offset 0) (alignment (cons 0 1)))
     "Returns values: lambda-list, length-form, declarations, initializers, alignment"
     (let ((lambda-list (make-collector))
