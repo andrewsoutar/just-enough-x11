@@ -26,4 +26,6 @@
   collector)
 
 (defun collect (collector &rest things)
-  (cdr (collect-all collector (apply #'make-collector things))))
+  (if collector
+      (cdr (collect-all collector (apply #'make-collector things)))
+      (progn (assert (endp things)) ())))
