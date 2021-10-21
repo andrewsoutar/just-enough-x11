@@ -36,10 +36,10 @@
               (values-list (mapcar (lambda (a) (- (cdr a) (car (first alignments)))) (rest alignments)))))))
 
 (ct (defclass serializer-info ()
-      ((lambda-list :reader lambda-list :initarg :lambda-list)
-       (types :reader types :initarg :types)
-       (wrapper-forms :reader wrapper-forms :initarg :wrapper-forms)
-       (length-forms :reader length-forms :initarg :length-forms)
+      ((lambda-list :reader lambda-list :initform (make-collector) :initarg :lambda-list)
+       (types :reader types :initform (make-collector) :initarg :types)
+       (wrapper-forms :reader wrapper-forms :initform (make-collector) :initarg :wrapper-forms)
+       (length-forms :reader length-forms :initform (make-collector) :initarg :length-forms)
        (initializers :reader initializers :initform (make-collector) :initarg :initializers)
        (alignment :accessor alignment :initarg :alignment))))
 
@@ -70,11 +70,7 @@
 (ct
   (defun make-struct-outputter (fields buffer-ptr-var &key request-hack (alignment (cons 0 1)))
     "Returns a SERIALIZER-INFO"
-    (let ((lambda-list (make-collector))
-          (types (make-collector))
-          (wrapper-forms (make-collector))
-          (length-forms (make-collector))
-          (initializers (make-collector))
+    (let ((info (make-instance 'serializer-info :alignment alignment))
           (value-list-fields ()))
       ;; value_mask + value_list at the end gets converted to keyword arguments
       (block parse-value-list
@@ -96,15 +92,15 @@
 
       (when request-hack
         ;; In requests, the first byte is at offset 1
-        (collect initializers `(incf-pointer ,buffer-ptr-var 1))
-        (collect length-forms 1)
+        (collect (initializers info) `(incf-pointer ,buffer-ptr-var 1))
+        (collect (length-forms info) 1)
         (incf (car alignment)))
 
       (dolist (field fields)
         (match-ecase field
           ((:pad bytes &rest)
-           (collect initializers `(incf-pointer ,buffer-ptr-var ,bytes))
-           (collect length-forms bytes)
+           (collect (initializers info) `(incf-pointer ,buffer-ptr-var ,bytes))
+           (collect (length-forms info) bytes)
            (incf (car alignment) bytes))
           ((:field &key name type &rest)
            (let ((name-hint (substitute #\- #\_ (string-upcase name)))
@@ -122,39 +118,39 @@
                (match-ecase (collect (lambda-list inner-info))
                  (())
                  ((var)
-                  (collect lambda-list var)
+                  (collect (lambda-list info) var)
                   (if override-type
-                      (collect types `(type ,override-type ,var))
-                      (collect-all types (types inner-info))))
+                      (collect (types info) `(type ,override-type ,var))
+                      (collect-all (types info) (types inner-info))))
                  ((&rest inner-ll)
                   (let ((var (make-symbol name-hint)))
-                    (collect lambda-list var)
-                    (collect types `(type list ,var))
-                    (collect wrapper-forms
+                    (collect (lambda-list info) var)
+                    (collect (types info) `(type list ,var))
+                    (collect (wrapper-forms info)
                       `(destructuring-bind (,@inner-ll) ,var
                          (declare ,@(collect (types inner-info))))))))
-               (collect-all wrapper-forms (wrapper-forms inner-info))
-               (collect-all length-forms (length-forms inner-info))
-               (collect-all initializers (initializers inner-info))
+               (collect-all (wrapper-forms info) (wrapper-forms inner-info))
+               (collect-all (length-forms info) (length-forms inner-info))
+               (collect-all (initializers info) (initializers inner-info))
                (setf alignment (alignment inner-info))))))
         (when request-hack
           ;; This field fits in the 1-byte gap in the request
           ;; header. After that, continue at offset 4.
-          (assert (equal (apply #'+ (collect length-forms)) 2))
-          (collect length-forms 2)
-          (collect initializers `(incf-pointer ,buffer-ptr-var 2))
+          (assert (equal (apply #'+ (collect (length-forms info))) 2))
+          (collect (length-forms info) 2)
+          (collect (initializers info) `(incf-pointer ,buffer-ptr-var 2))
           (incf (car alignment) 2)
           (setf request-hack nil)))
 
       (when value-list-fields
-        (collect lambda-list '&key)
+        (collect (lambda-list info) '&key)
         (let ((value-mask-ptr-var (gensym "VALUE-MASK-PTR"))
               (switch-initializers (make-collector)))
           (multiple-value-bind (value-mask-var mask-type-decl mask-initializers)
               (let ((inner-info (gen-setter value-mask-ptr-var 4 alignment :name-hint "VALUE-MASK")))
                 (match-let* (((var) (collect (lambda-list inner-info))))
                   (assert (endp (collect (wrapper-forms inner-info))))
-                  (collect-all length-forms (length-forms inner-info))
+                  (collect-all (length-forms info) (length-forms inner-info))
                   (setf alignment (alignment inner-info))
                   (values var (collect (types inner-info)) (initializers inner-info))))
             (dolist (switch-field value-list-fields)
@@ -165,18 +161,18 @@
                     (match-ecase (collect (lambda-list inner-info))
                       (())
                       ((lone-var)
-                       (collect lambda-list `((,keyword ,lone-var) nil ,present-p-var))
-                       (apply #'collect types
+                       (collect (lambda-list info) `((,keyword ,lone-var) nil ,present-p-var))
+                       (apply #'collect (types info)
                               (mapcar (lambda (inner-type)
                                         (match-ecase inner-type
                                           (('type type var) `(type (or null ,type) ,var))))
                                       (collect (types inner-info))))))
-                    (collect length-forms `(if ,present-p-var (+ ,@(collect (length-forms inner-info))) 0))
+                    (collect (length-forms info) `(if ,present-p-var (+ ,@(collect (length-forms inner-info))) 0))
                     (collect switch-initializers `(when ,present-p-var
                                                     (setf ,value-mask-var (logior ,value-mask-var ,mask-num))
                                                     ,@(collect (initializers inner-info))))
                     (setf alignment (alignment-union alignment (alignment inner-info)))))))
-            (collect initializers
+            (collect (initializers info)
               `(let ((,value-mask-var 0)
                      (,value-mask-ptr-var ,buffer-ptr-var))
                  (declare ,@mask-type-decl)
@@ -184,12 +180,7 @@
                  ,@(collect switch-initializers)
                  ,@(collect mask-initializers))))))
 
-      (make-instance 'serializer-info :lambda-list lambda-list
-                                      :types types
-                                      :wrapper-forms wrapper-forms
-                                      :length-forms length-forms
-                                      :initializers initializers
-                                      :alignment alignment))))
+      info)))
 
 (ct
   (defparameter *supported-messages*
