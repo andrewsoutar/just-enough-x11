@@ -232,7 +232,7 @@ pointed to by the pointer in BUFFER-PTR-VAR.")
 
 (ct
   (defparameter *supported-messages*
-    '(("xproto" "MapWindow"))))
+    '(("xproto" "CreateWindow" "MapWindow"))))
 
 (defmacro with-pointer-to-bytes ((var length) &body body)
   (cond
