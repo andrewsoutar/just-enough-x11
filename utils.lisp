@@ -1,6 +1,6 @@
 (uiop:define-package #:com.andrewsoutar.just-enough-x11/utils
   (:use #:cl)
-  (:export #:ct #:nest)
+  (:export #:ct #:nest #:with)
   (:export #:make-collector #:collect-all #:collect))
 (cl:in-package #:com.andrewsoutar.just-enough-x11/utils)
 
@@ -11,6 +11,10 @@
 (defmacro nest (&body body)
   (destructuring-bind (first &rest rest) body
     (if rest `(,@(first body) (nest ,@(rest body))) first)))
+
+(defmacro with ((name value) &body body)
+  "Binds NAME to VALUE, evaluates BODY, and returns the value of NAME"
+  `(let ((,name ,value)) ,@body ,name))
 
 ;;; FIXME I might want to spin some of these utils out into a library,
 ;;; I end up copy-pasting them into all my projects
