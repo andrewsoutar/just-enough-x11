@@ -39,7 +39,7 @@
 
 (ct (defclass serializer-info ()
       ((lambda-list :reader lambda-list :initform (make-collector) :initarg :lambda-list)
-       (types :reader types :initform (make-collector) :initarg :types)
+       (types :accessor types :initform (make-collector) :initarg :types)
        (wrapper-forms :reader wrapper-forms :initform (make-collector) :initarg :wrapper-forms)
        (length-forms :reader length-forms :initform (make-collector) :initarg :length-forms)
        (initializers :reader initializers :initform (make-collector) :initarg :initializers))))
@@ -66,6 +66,19 @@
             `(incf-pointer ,buffer-ptr-var ,stride))
           (incf offset stride)
           (incf (car *alignment*) stride)))))
+
+(ct (defun make-type-serializer (type buffer-ptr-var &key name-hint)
+      #.(format nil "~
+Returns a SERIALIZER-INFO which is able to serialize TYPE into the buffer
+pointed to by the pointer in BUFFER-PTR-VAR.")
+      (match-ecase (find-type type)
+        (:xid (with (info (gen-setter buffer-ptr-var 4 :name-hint name-hint))
+                (match-let* (((var) (collect (lambda-list info))))
+                  (setf (types info) (make-collector `(type (unsigned-byte 29) ,var))))))
+        (((m:and kind (m:or :unsigned :signed)) bits)
+         (multiple-value-bind (bytes leftover) (floor bits 8)
+           (assert (zerop leftover))
+           (gen-setter buffer-ptr-var bytes :signedp (eql kind :signed) :name-hint name-hint))))))
 
 (ct
   (defun make-struct-outputter (fields buffer-ptr-var &key request-hack)
@@ -103,25 +116,12 @@
            (collect (length-forms info) bytes)
            (incf (car *alignment*) bytes))
           ((:field &key name type &rest)
-           (let ((name-hint (substitute #\- #\_ (string-upcase name)))
-                 override-type)
-             (let ((inner-info
-                     (match-ecase (find-type type)
-                       (:xid (setf override-type '(unsigned-byte 29))
-                             (gen-setter buffer-ptr-var 4 :name-hint name-hint))
-                       (((m:and kind (m:or :unsigned :signed)) bits)
-                        (multiple-value-bind (bytes leftover) (floor bits 8)
-                          (assert (zerop leftover))
-                          (gen-setter buffer-ptr-var bytes :signedp (eql kind :signed)
-                                                           :name-hint name-hint)))
-                       (type-form (error "Unable to parse type \"~A\" as ~A" type type-form)))))
+           (let ((name-hint (substitute #\- #\_ (string-upcase name))))
+             (let ((inner-info (make-type-serializer type buffer-ptr-var :name-hint name-hint)))
                (match-ecase (collect (lambda-list inner-info))
                  (())
                  ((var)
-                  (collect (lambda-list info) var)
-                  (if override-type
-                      (collect (types info) `(type ,override-type ,var))
-                      (collect-all (types info) (types inner-info))))
+                  (collect (lambda-list info) var))
                  ((&rest inner-ll)
                   (let ((var (make-symbol name-hint)))
                     (collect (lambda-list info) var)
@@ -129,6 +129,7 @@
                     (collect (wrapper-forms info)
                       `(destructuring-bind (,@inner-ll) ,var
                          (declare ,@(collect (types inner-info))))))))
+               (collect-all (types info) (types inner-info))
                (collect-all (wrapper-forms info) (wrapper-forms inner-info))
                (collect-all (length-forms info) (length-forms inner-info))
                (collect-all (initializers info) (initializers inner-info))))))
