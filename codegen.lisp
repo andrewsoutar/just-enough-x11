@@ -48,7 +48,7 @@
       unaligned) WIDTH-byte int in the buffer. Returns a SERIALIZER-INFO.")
       (do* ((value-var (if name-hint (make-symbol name-hint) (gensym "VALUE")))
             (type-decl `(type (,(if signedp 'signed-byte 'unsigned-byte) ,(* 8 width)) ,value-var))
-            (info (make-instance 'serializer-info :lambda-list (list value-var)
+            (info (make-instance 'serializer-info :lambda-list (make-collector value-var)
                                                   :types (list type-decl)
                                                   :wrapper-forms ()
                                                   :length-forms (make-collector width)
@@ -119,7 +119,7 @@
                           (gen-setter buffer-ptr-var bytes alignment :signedp (eql kind :signed)
                                                                      :name-hint name-hint)))
                        (type-form (error "Unable to parse type \"~A\" as ~A" type type-form)))))
-               (match-ecase (lambda-list inner-info)
+               (match-ecase (collect (lambda-list inner-info))
                  (())
                  ((var)
                   (collect lambda-list var)
@@ -150,7 +150,7 @@
               (switch-initializers (make-collector)))
           (multiple-value-bind (value-mask-var mask-type-decl mask-initializers)
               (let ((inner-info (gen-setter value-mask-ptr-var 4 alignment :name-hint "VALUE-MASK")))
-                (match-let* (((var) (lambda-list inner-info)))
+                (match-let* (((var) (collect (lambda-list inner-info))))
                   (assert (endp (collect (wrapper-forms inner-info))))
                   (collect-all length-forms (length-forms inner-info))
                   (setf alignment (alignment inner-info))
@@ -160,7 +160,7 @@
                 (let ((inner-info (make-struct-outputter fields buffer-ptr-var :alignment alignment)))
                   (assert (endp (collect (wrapper-forms inner-info))))
                   (let ((present-p-var (gensym (format nil "~A-PRESENT-P" keyword))))
-                    (match-ecase (lambda-list inner-info)
+                    (match-ecase (collect (lambda-list inner-info))
                       (())
                       ((lone-var)
                        (collect lambda-list `((,keyword ,lone-var) nil ,present-p-var))
@@ -182,7 +182,7 @@
                  ,@(collect switch-initializers)
                  ,@(collect mask-initializers))))))
 
-      (make-instance 'serializer-info :lambda-list (collect lambda-list)
+      (make-instance 'serializer-info :lambda-list lambda-list
                                       :types (collect types)
                                       :wrapper-forms wrapper-forms
                                       :length-forms length-forms
@@ -231,7 +231,7 @@
                    (buffer (gensym "BUFFER"))
                    (buffer-fill (gensym "BUFFER-FILL")))
                (let ((info (make-struct-outputter fields buffer-fill :request-hack t :alignment (cons 0 0))))
-                 `(defun ,name (,connection ,@(lambda-list info))
+                 `(defun ,name (,connection ,@(collect (lambda-list info)))
                     (declare (type foreign-pointer ,connection) ,@(types info))
                     (nest ,@(collect (wrapper-forms info))
                       (let ((,length (+ ,@(collect (length-forms info)))))
