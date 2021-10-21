@@ -39,7 +39,7 @@
       ((lambda-list :reader lambda-list :initarg :lambda-list)
        (types :reader types :initarg :types)
        (wrapper-forms :reader wrapper-forms :initarg :wrapper-forms)
-       (length-form :reader length-form :initarg :length-form)
+       (length-forms :reader length-forms :initarg :length-forms)
        (initializers :reader initializers :initform (make-collector) :initarg :initializers)
        (alignment :accessor alignment :initarg :alignment))))
 
@@ -51,7 +51,7 @@
             (info (make-instance 'serializer-info :lambda-list value-var
                                                   :types (list type-decl)
                                                   :wrapper-forms ()
-                                                  :length-form width
+                                                  :length-forms (list width)
                                                   :alignment alignment))
             (offset 0))
            ((>= offset width) info)
@@ -69,7 +69,7 @@
 
 (ct
   (defun make-struct-outputter (fields buffer-ptr-var &key request-hack (alignment (cons 0 1)))
-    "Returns values: lambda-list, types, wrapper-forms-collector, length-form, initializers-collector, alignment"
+    "Returns values: lambda-list, types, wrapper-forms-collector, length-forms, initializers-collector, alignment"
     (let ((lambda-list (make-collector))
           (types (make-collector))
           (wrapper-forms (make-collector))
@@ -132,7 +132,7 @@
                       `(destructuring-bind (,@inner-ll) ,var
                          (declare ,@(types inner-info)))))))
                (collect-all wrapper-forms (wrapper-forms inner-info))
-               (collect length-forms (length-form inner-info))
+               (apply #'collect length-forms (length-forms inner-info))
                (collect-all initializers (initializers inner-info))
                (setf alignment (alignment inner-info))))))
         (when request-hack
@@ -152,7 +152,7 @@
               (let ((inner-info (gen-setter value-mask-ptr-var 4 alignment :name-hint "VALUE-MASK")))
                 (assert (symbolp (lambda-list inner-info)))
                 (assert (endp (collect (wrapper-forms inner-info))))
-                (collect length-forms (length-form inner-info))
+                (apply #'collect length-forms (length-forms inner-info))
                 (setf alignment (alignment inner-info))
                 (values (lambda-list inner-info) (types inner-info) (initializers inner-info)))
             (dolist (switch-field value-list-fields)
@@ -169,7 +169,7 @@
                                         (match-ecase inner-type
                                           (('type type var) `(type (or null ,type) ,var))))
                                       (types inner-info)))))
-                    (collect length-forms `(if ,present-p-var ,(length-form inner-info) 0))
+                    (collect length-forms `(if ,present-p-var (+ ,@(length-forms inner-info)) 0))
                     (collect switch-initializers `(when ,present-p-var
                                                     (setf ,value-mask-var (logior ,value-mask-var ,mask-num))
                                                     ,@(collect (initializers inner-info))))
@@ -185,7 +185,7 @@
       (make-instance 'serializer-info :lambda-list (collect lambda-list)
                                       :types (collect types)
                                       :wrapper-forms wrapper-forms
-                                      :length-form `(+ ,@(collect length-forms))
+                                      :length-forms (collect length-forms)
                                       :initializers initializers
                                       :alignment alignment))))
 
@@ -234,7 +234,7 @@
                  `(defun ,name (,connection ,@(lambda-list info))
                     (declare (type foreign-pointer ,connection) ,@(types info))
                     (nest ,@(collect (wrapper-forms info))
-                      (let ((,length ,(length-form info)))
+                      (let ((,length (+ ,@(length-forms info))))
                         (with-pointer-to-bytes (,buffer ,length)
                           (let ((,buffer-fill ,buffer))
                             ,@(collect (initializers info))
