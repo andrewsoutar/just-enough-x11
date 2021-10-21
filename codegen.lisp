@@ -35,15 +35,27 @@
               (values-list (mapcar #'cdr alignments))
               (values-list (mapcar (lambda (a) (- (cdr a) (car (first alignments)))) (rest alignments)))))))
 
+(ct (defclass serializer-info ()
+      ((lambda-list :reader lambda-list :initarg :lambda-list)
+       (types :reader types :initarg :types)
+       (wrapper-forms :reader wrapper-forms :initarg :wrapper-forms)
+       (length-form :reader length-form :initarg :length-form)
+       (initializers :reader initializers :initarg :initializers)
+       (alignment :accessor alignment :initarg :alignment))))
+
 (ct (defun gen-setter (buffer-ptr-var width alignment &key signedp name-hint)
       #.(format nil "Generates code for setting a (potentially ~
-      unaligned) WIDTH-byte int in the buffer. Returns values like ~
-      MAKE-STRUCT-OUTPUTTER.")
+      unaligned) WIDTH-byte int in the buffer. Returns a SERIALIZER-INFO.")
       (do* ((value-var (if name-hint (make-symbol name-hint) (gensym "VALUE")))
             (type-decl `(type (,(if signedp 'signed-byte 'unsigned-byte) ,(* 8 width)) ,value-var))
             (initializers (make-collector))
             (offset 0))
-           ((>= offset width) (values value-var (list type-decl) () width initializers alignment))
+           ((>= offset width) (make-instance 'serializer-info :lambda-list value-var
+                                                              :types (list type-decl)
+                                                              :wrapper-forms ()
+                                                              :length-form width
+                                                              :initializers initializers
+                                                              :alignment alignment))
         (let* ((worst-case (logior (car alignment) (cdr alignment) 8 #-64-bit 4))
                (stride (- (logior (ash -1 (1- (integer-length (- width offset)))) worst-case (- worst-case))))
                (type (find-symbol (format nil "UINT~A" (* 8 stride)) :keyword)))
@@ -98,32 +110,32 @@
           ((:field &key name type &rest)
            (let ((name-hint (substitute #\- #\_ (string-upcase name)))
                  override-type)
-             (multiple-value-bind (inner-ll inner-types inner-wrapper-forms inner-length-form
-                                   inner-initializers inner-alignment)
-                 (match-ecase (find-type type)
-                   (:xid (setf override-type '(unsigned-byte 29))
-                         (gen-setter buffer-ptr-var 4 alignment :name-hint name-hint))
-                   (((m:and kind (m:or :unsigned :signed)) bits)
-                    (multiple-value-bind (bytes leftover) (floor bits 8)
-                      (assert (zerop leftover))
-                      (gen-setter buffer-ptr-var bytes alignment :signedp (eql kind :signed) :name-hint name-hint)))
-                   (type-form (error "Unable to parse type \"~A\" as ~A" type type-form)))
-               (match-ecase inner-ll
+             (let ((inner-info
+                     (match-ecase (find-type type)
+                       (:xid (setf override-type '(unsigned-byte 29))
+                             (gen-setter buffer-ptr-var 4 alignment :name-hint name-hint))
+                       (((m:and kind (m:or :unsigned :signed)) bits)
+                        (multiple-value-bind (bytes leftover) (floor bits 8)
+                          (assert (zerop leftover))
+                          (gen-setter buffer-ptr-var bytes alignment :signedp (eql kind :signed)
+                                                                     :name-hint name-hint)))
+                       (type-form (error "Unable to parse type \"~A\" as ~A" type type-form)))))
+               (match-ecase (lambda-list inner-info)
                  (())
                  ((m:and var (m:type symbol))
                   (collect lambda-list var)
-                  (apply #'collect types (if override-type `((type ,override-type ,var)) inner-types)))
+                  (apply #'collect types (if override-type `((type ,override-type ,var)) (types inner-info))))
                  ((&rest inner-ll)
                   (let ((var (make-symbol name-hint)))
                     (collect lambda-list var)
                     (collect types `(type list ,var))
                     (collect wrapper-forms
                       `(destructuring-bind (,@inner-ll) ,var
-                         (declare ,@inner-types))))))
-               (collect-all wrapper-forms inner-wrapper-forms)
-               (collect length-forms inner-length-form)
-               (collect-all initializers inner-initializers)
-               (setf alignment inner-alignment)))))
+                         (declare ,@(types inner-info)))))))
+               (collect-all wrapper-forms (wrapper-forms inner-info))
+               (collect length-forms (length-form inner-info))
+               (collect-all initializers (initializers inner-info))
+               (setf alignment (alignment inner-info))))))
         (when request-hack
           ;; This field fits in the 1-byte gap in the request
           ;; header. After that, continue at offset 4.
@@ -138,22 +150,18 @@
         (let ((value-mask-ptr-var (gensym "VALUE-MASK-PTR"))
               (switch-initializers (make-collector)))
           (multiple-value-bind (value-mask-var mask-type-decl mask-initializers)
-              (multiple-value-bind (inner-ll inner-types inner-wrapper-forms inner-length-form
-                                    inner-initializers inner-alignment)
-                  (gen-setter value-mask-ptr-var 4 alignment :name-hint "VALUE-MASK-PTR")
-                (assert (symbolp inner-ll))
-                (assert (endp (collect inner-wrapper-forms)))
-                (collect length-forms inner-length-form)
-                (setf alignment inner-alignment)
-                (values inner-ll inner-types inner-initializers))
+              (let ((inner-info (gen-setter value-mask-ptr-var 4 alignment :name-hint "VALUE-MASK")))
+                (assert (symbolp (lambda-list inner-info)))
+                (assert (endp (collect (wrapper-forms inner-info))))
+                (collect length-forms (length-form inner-info))
+                (setf alignment (alignment inner-info))
+                (values (lambda-list inner-info) (types inner-info) (initializers inner-info)))
             (dolist (switch-field value-list-fields)
               (destructuring-bind (keyword mask-num fields) switch-field
-                (multiple-value-bind (inner-ll inner-types inner-wrapper-forms inner-length-form
-                                      inner-initializers inner-alignment)
-                    (make-struct-outputter fields buffer-ptr-var :alignment alignment)
-                  (assert (endp (collect inner-wrapper-forms)))
+                (let ((inner-info (make-struct-outputter fields buffer-ptr-var :alignment alignment)))
+                  (assert (endp (collect (wrapper-forms inner-info))))
                   (let ((present-p-var (gensym (format nil "~A-PRESENT-P" keyword))))
-                    (match-ecase inner-ll
+                    (match-ecase (lambda-list inner-info)
                       (())
                       ((lone-var)
                        (collect lambda-list `((,keyword ,lone-var) nil ,present-p-var))
@@ -161,12 +169,12 @@
                               (mapcar (lambda (inner-type)
                                         (match-ecase inner-type
                                           (('type type var) `(type (or null ,type) ,var))))
-                                      inner-types))))
-                    (collect length-forms `(if ,present-p-var ,inner-length-form 0))
+                                      (types inner-info)))))
+                    (collect length-forms `(if ,present-p-var ,(length-form inner-info) 0))
                     (collect switch-initializers `(when ,present-p-var
                                                     (setf ,value-mask-var (logior ,value-mask-var ,mask-num))
-                                                    ,@(collect inner-initializers)))
-                    (setf alignment (alignment-union alignment inner-alignment))))))
+                                                    ,@(collect (initializers inner-info))))
+                    (setf alignment (alignment-union alignment (alignment inner-info)))))))
             (collect initializers
               `(let ((,value-mask-var 0)
                      (,value-mask-ptr-var ,buffer-ptr-var))
@@ -175,8 +183,12 @@
                  ,@(collect switch-initializers)
                  ,@(collect mask-initializers))))))
 
-      (values (collect lambda-list) (collect types) wrapper-forms
-              `(+ ,@(collect length-forms)) initializers alignment))))
+      (make-instance 'serializer-info :lambda-list (collect lambda-list)
+                                      :types (collect types)
+                                      :wrapper-forms wrapper-forms
+                                      :length-form `(+ ,@(collect length-forms))
+                                      :initializers initializers
+                                      :alignment alignment))))
 
 (ct
   (defparameter *supported-messages*
@@ -219,14 +231,13 @@
                    (length (gensym "LENGTH"))
                    (buffer (gensym "BUFFER"))
                    (buffer-fill (gensym "BUFFER-FILL")))
-               (multiple-value-bind (lambda-list types wrapper-forms length-form initializers)
-                   (make-struct-outputter fields buffer-fill :request-hack t :alignment (cons 0 0))
-                 `(defun ,name (,connection ,@lambda-list)
-                    (declare (type foreign-pointer ,connection) ,@types)
-                    (nest ,@(collect wrapper-forms)
-                      (let ((,length ,length-form))
+               (let ((info (make-struct-outputter fields buffer-fill :request-hack t :alignment (cons 0 0))))
+                 `(defun ,name (,connection ,@(lambda-list info))
+                    (declare (type foreign-pointer ,connection) ,@(types info))
+                    (nest ,@(collect (wrapper-forms info))
+                      (let ((,length ,(length-form info)))
                         (with-pointer-to-bytes (,buffer ,length)
                           (let ((,buffer-fill ,buffer))
-                            ,@(collect initializers)
+                            ,@(collect (initializers info))
                             (assert (pointer-eq (inc-pointer ,buffer ,length) ,buffer-fill)))
                           (xcb-send ,connection ,opcode nil ,buffer ,length (null-pointer) 0))))))))))))))
