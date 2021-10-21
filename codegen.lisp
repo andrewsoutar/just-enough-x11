@@ -51,7 +51,7 @@
             (info (make-instance 'serializer-info :lambda-list value-var
                                                   :types (list type-decl)
                                                   :wrapper-forms ()
-                                                  :length-forms (list width)
+                                                  :length-forms (make-collector width)
                                                   :alignment alignment))
             (offset 0))
            ((>= offset width) info)
@@ -132,7 +132,7 @@
                       `(destructuring-bind (,@inner-ll) ,var
                          (declare ,@(types inner-info)))))))
                (collect-all wrapper-forms (wrapper-forms inner-info))
-               (apply #'collect length-forms (length-forms inner-info))
+               (collect-all length-forms (length-forms inner-info))
                (collect-all initializers (initializers inner-info))
                (setf alignment (alignment inner-info))))))
         (when request-hack
@@ -152,7 +152,7 @@
               (let ((inner-info (gen-setter value-mask-ptr-var 4 alignment :name-hint "VALUE-MASK")))
                 (assert (symbolp (lambda-list inner-info)))
                 (assert (endp (collect (wrapper-forms inner-info))))
-                (apply #'collect length-forms (length-forms inner-info))
+                (collect-all length-forms (length-forms inner-info))
                 (setf alignment (alignment inner-info))
                 (values (lambda-list inner-info) (types inner-info) (initializers inner-info)))
             (dolist (switch-field value-list-fields)
@@ -169,7 +169,7 @@
                                         (match-ecase inner-type
                                           (('type type var) `(type (or null ,type) ,var))))
                                       (types inner-info)))))
-                    (collect length-forms `(if ,present-p-var (+ ,@(length-forms inner-info)) 0))
+                    (collect length-forms `(if ,present-p-var (+ ,@(collect (length-forms inner-info))) 0))
                     (collect switch-initializers `(when ,present-p-var
                                                     (setf ,value-mask-var (logior ,value-mask-var ,mask-num))
                                                     ,@(collect (initializers inner-info))))
@@ -185,7 +185,7 @@
       (make-instance 'serializer-info :lambda-list (collect lambda-list)
                                       :types (collect types)
                                       :wrapper-forms wrapper-forms
-                                      :length-forms (collect length-forms)
+                                      :length-forms length-forms
                                       :initializers initializers
                                       :alignment alignment))))
 
@@ -234,7 +234,7 @@
                  `(defun ,name (,connection ,@(lambda-list info))
                     (declare (type foreign-pointer ,connection) ,@(types info))
                     (nest ,@(collect (wrapper-forms info))
-                      (let ((,length (+ ,@(length-forms info))))
+                      (let ((,length (+ ,@(collect (length-forms info)))))
                         (with-pointer-to-bytes (,buffer ,length)
                           (let ((,buffer-fill ,buffer))
                             ,@(collect (initializers info))
