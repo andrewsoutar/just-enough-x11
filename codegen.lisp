@@ -49,7 +49,7 @@
       (do* ((value-var (if name-hint (make-symbol name-hint) (gensym "VALUE")))
             (type-decl `(type (,(if signedp 'signed-byte 'unsigned-byte) ,(* 8 width)) ,value-var))
             (info (make-instance 'serializer-info :lambda-list (make-collector value-var)
-                                                  :types (list type-decl)
+                                                  :types (make-collector type-decl)
                                                   :wrapper-forms ()
                                                   :length-forms (make-collector width)
                                                   :alignment alignment))
@@ -123,14 +123,16 @@
                  (())
                  ((var)
                   (collect lambda-list var)
-                  (apply #'collect types (if override-type `((type ,override-type ,var)) (types inner-info))))
+                  (if override-type
+                      (collect types `(type ,override-type ,var))
+                      (collect-all types (types inner-info))))
                  ((&rest inner-ll)
                   (let ((var (make-symbol name-hint)))
                     (collect lambda-list var)
                     (collect types `(type list ,var))
                     (collect wrapper-forms
                       `(destructuring-bind (,@inner-ll) ,var
-                         (declare ,@(types inner-info)))))))
+                         (declare ,@(collect (types inner-info))))))))
                (collect-all wrapper-forms (wrapper-forms inner-info))
                (collect-all length-forms (length-forms inner-info))
                (collect-all initializers (initializers inner-info))
@@ -154,7 +156,7 @@
                   (assert (endp (collect (wrapper-forms inner-info))))
                   (collect-all length-forms (length-forms inner-info))
                   (setf alignment (alignment inner-info))
-                  (values var (types inner-info) (initializers inner-info))))
+                  (values var (collect (types inner-info)) (initializers inner-info))))
             (dolist (switch-field value-list-fields)
               (destructuring-bind (keyword mask-num fields) switch-field
                 (let ((inner-info (make-struct-outputter fields buffer-ptr-var :alignment alignment)))
@@ -168,7 +170,7 @@
                               (mapcar (lambda (inner-type)
                                         (match-ecase inner-type
                                           (('type type var) `(type (or null ,type) ,var))))
-                                      (types inner-info)))))
+                                      (collect (types inner-info))))))
                     (collect length-forms `(if ,present-p-var (+ ,@(collect (length-forms inner-info))) 0))
                     (collect switch-initializers `(when ,present-p-var
                                                     (setf ,value-mask-var (logior ,value-mask-var ,mask-num))
@@ -183,7 +185,7 @@
                  ,@(collect mask-initializers))))))
 
       (make-instance 'serializer-info :lambda-list lambda-list
-                                      :types (collect types)
+                                      :types types
                                       :wrapper-forms wrapper-forms
                                       :length-forms length-forms
                                       :initializers initializers
@@ -232,7 +234,7 @@
                    (buffer-fill (gensym "BUFFER-FILL")))
                (let ((info (make-struct-outputter fields buffer-fill :request-hack t :alignment (cons 0 0))))
                  `(defun ,name (,connection ,@(collect (lambda-list info)))
-                    (declare (type foreign-pointer ,connection) ,@(types info))
+                    (declare (type foreign-pointer ,connection) ,@(collect (types info)))
                     (nest ,@(collect (wrapper-forms info))
                       (let ((,length (+ ,@(collect (length-forms info)))))
                         (with-pointer-to-bytes (,buffer ,length)
