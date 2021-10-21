@@ -25,7 +25,7 @@
 (ct (defun alignment-union (&rest alignments)
       "An alignment which can represent any of the ALIGNMENTS"
       ;; We choose our multiple such that it divides each of the
-      ;; multiples in ALIGNMENS, and so that all the offsets of the
+      ;; multiples in ALIGNMENTS, and so that all the offsets of the
       ;; ALIGNMENTs are pairwise equivalent modulo the multiple. After
       ;; that, which ALIGNMENT we choose to provide the eventual
       ;; offset is arbitrary.
