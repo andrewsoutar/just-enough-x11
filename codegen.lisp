@@ -69,7 +69,7 @@
 
 (ct
   (defun make-struct-outputter (fields buffer-ptr-var &key request-hack (alignment (cons 0 1)))
-    "Returns values: lambda-list, types, wrapper-forms-collector, length-forms, initializers-collector, alignment"
+    "Returns a SERIALIZER-INFO"
     (let ((lambda-list (make-collector))
           (types (make-collector))
           (wrapper-forms (make-collector))
