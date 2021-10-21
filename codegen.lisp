@@ -40,7 +40,7 @@
        (types :reader types :initarg :types)
        (wrapper-forms :reader wrapper-forms :initarg :wrapper-forms)
        (length-form :reader length-form :initarg :length-form)
-       (initializers :reader initializers :initarg :initializers)
+       (initializers :reader initializers :initform (make-collector) :initarg :initializers)
        (alignment :accessor alignment :initarg :alignment))))
 
 (ct (defun gen-setter (buffer-ptr-var width alignment &key signedp name-hint)
@@ -48,25 +48,24 @@
       unaligned) WIDTH-byte int in the buffer. Returns a SERIALIZER-INFO.")
       (do* ((value-var (if name-hint (make-symbol name-hint) (gensym "VALUE")))
             (type-decl `(type (,(if signedp 'signed-byte 'unsigned-byte) ,(* 8 width)) ,value-var))
-            (initializers (make-collector))
+            (info (make-instance 'serializer-info :lambda-list value-var
+                                                  :types (list type-decl)
+                                                  :wrapper-forms ()
+                                                  :length-form width
+                                                  :alignment alignment))
             (offset 0))
-           ((>= offset width) (make-instance 'serializer-info :lambda-list value-var
-                                                              :types (list type-decl)
-                                                              :wrapper-forms ()
-                                                              :length-form width
-                                                              :initializers initializers
-                                                              :alignment alignment))
-        (let* ((worst-case (logior (car alignment) (cdr alignment) 8 #-64-bit 4))
+           ((>= offset width) info)
+        (let* ((worst-case (logior (car (alignment info)) (cdr (alignment info)) 8 #-64-bit 4))
                (stride (- (logior (ash -1 (1- (integer-length (- width offset)))) worst-case (- worst-case))))
                (type (find-symbol (format nil "UINT~A" (* 8 stride)) :keyword)))
           (assert type)
-          (collect initializers
+          (collect (initializers info)
             `(setf (mem-ref ,buffer-ptr-var ,type)
                    (ldb (byte ,(* stride 8) ,(* 8 #+big-endian (- width offset stride) #+little-endian offset))
                         ,value-var))
             `(incf-pointer ,buffer-ptr-var ,stride))
           (incf offset stride)
-          (incf (car alignment) stride)))))
+          (incf (car (alignment info)) stride)))))
 
 (ct
   (defun make-struct-outputter (fields buffer-ptr-var &key request-hack (alignment (cons 0 1)))
